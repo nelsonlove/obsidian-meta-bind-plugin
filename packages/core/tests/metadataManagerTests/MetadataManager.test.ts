@@ -515,6 +515,10 @@ describe('metadata manager cycle gate', () => {
 	});
 
 	test('should not stop the cycle timer while a write-back is still pending', async () => {
+		// `TestMetadataSource` aliases its cache data to `externalMetadata`, so asserting on
+		// `externalMetadata` would pass before the flush. Spy on the flush itself instead.
+		const syncSpy = spyOn(testSource, 'syncExternal');
+
 		const bindTarget = createBindTarget(testFilePath, ['var1']);
 		const s1 = subscribe(manager, bindTarget);
 
@@ -524,14 +528,22 @@ describe('metadata manager cycle gate', () => {
 		// the last field just unmounted, but the value has not reached the external source yet
 		const cacheItem = testSource.getCacheItems()[0];
 		expect(cacheItem.dirty).toBe(true);
+		expect(syncSpy).toHaveBeenCalledTimes(0);
 		expect(manager.hasCycleWork()).toBe(true);
 		expect(scheduler.isRunning()).toBe(true);
 
 		await manager.cycle();
 
+		expect(syncSpy).toHaveBeenCalledTimes(1);
+		expect(syncSpy.mock.calls[0][0]).toBe(cacheItem);
 		expect(cacheItem.dirty).toBe(false);
-		expect(testSource.externalMetadata[testFilePath].var1).toBe(42);
+		expect(cacheItem.data.var1).toBe(42);
 		expect(scheduler.isRunning()).toBe(true);
+
+		// a flushed item is not dirty any more, so it must not be flushed again
+		await manager.cycle();
+
+		expect(syncSpy).toHaveBeenCalledTimes(1);
 	});
 
 	test('should keep cycling a non deletable cache item until its write lock has expired', async () => {

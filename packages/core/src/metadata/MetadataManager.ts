@@ -138,6 +138,10 @@ export class MetadataManager {
 	 * When none of that holds for any cache item, cycling is pure overhead and the timer is stopped.
 	 * The permanently present global memory cache item is not deletable, so on its own it never keeps
 	 * the timer alive.
+	 *
+	 * Note for source authors: {@link IMetadataSource.onCycle} is only called while this returns
+	 * true. It is a no-op in every source today. A source that wants real per-tick work there has to
+	 * make that work visible to this check, otherwise it will not run once the vault goes idle.
 	 */
 	public hasCycleWork(): boolean {
 		for (const source of this.sources.values()) {
