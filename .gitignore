@@ -40,3 +40,6 @@ exampleVault/.obsidian/plugins/obsidian-meta-bind-plugin/*
 coverage/
 
 dist/
+
+# git worktrees created for parallel work
+.worktrees/
