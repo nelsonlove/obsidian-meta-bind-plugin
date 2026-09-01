@@ -140,5 +140,6 @@ export abstract class MetaBind<Components extends MB_Comps = MB_Comps> {
 
 	destroy(): void {
 		this.mountableManager.unload();
+		this.metadataManager.destroy();
 	}
 }

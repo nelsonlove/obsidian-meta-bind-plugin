@@ -2,6 +2,7 @@ import { MetaBind } from 'meta-bind-core/src';
 import { DomHelpers } from 'meta-bind-core/src/api/DomHelpers';
 import { RenderChildType } from 'meta-bind-core/src/config/APIConfigs';
 import { EMBED_MAX_DEPTH } from 'meta-bind-core/src/config/FieldConfigs';
+import { IntervalCycleScheduler } from 'meta-bind-core/src/metadata/CycleScheduler';
 import { GlobalMetadataSource, InternalMetadataSource } from 'meta-bind-core/src/metadata/InternalMetadataSources';
 import { MetadataManager } from 'meta-bind-core/src/metadata/MetadataManager';
 import { MountableManager } from 'meta-bind-core/src/MountableManager';
@@ -71,7 +72,10 @@ export class PublishMetaBind extends MetaBind<PublishComponents> {
 		);
 		this.metadataManager.setDefaultSource(BindTargetStorageType.FRONTMATTER);
 
-		window.setInterval(() => void this.metadataManager.cycle(), this.settings.syncInterval);
+		// gated on outstanding metadata work, see `MetadataManager.hasCycleWork`
+		this.metadataManager.setCycleScheduler(
+			new IntervalCycleScheduler(() => void this.metadataManager.cycle(), this.settings.syncInterval),
+		);
 	}
 
 	onLoad(): void {

@@ -1,3 +1,4 @@
+import type { CycleScheduler } from 'meta-bind-core/src/metadata/CycleScheduler';
 import type { DeriveFunction } from 'meta-bind-core/src/metadata/DerivedMetadataSubscription';
 import { DerivedMetadataSubscription } from 'meta-bind-core/src/metadata/DerivedMetadataSubscription';
 import type { EffectFunction } from 'meta-bind-core/src/metadata/EffectMetadataSubscription';
@@ -87,14 +88,99 @@ export function bindTargetToString(a: BindTargetDeclaration | undefined): string
 export class MetadataManager {
 	sources: Map<string, MetadataSource>;
 	defaultSource: string;
+	private cycleScheduler: CycleScheduler | undefined;
 
 	constructor() {
 		this.sources = new Map<string, MetadataSource>();
 		this.defaultSource = 'CHANGE_THE_DEFAULT_SOURCE';
+		this.cycleScheduler = undefined;
 	}
 
 	public registerSource(source: MetadataSource): void {
 		this.sources.set(source.id, source);
+	}
+
+	/**
+	 * Attaches the scheduler that drives {@link MetadataManager.cycle}.
+	 *
+	 * The manager starts and stops the scheduler itself, so that the cycle timer only runs while
+	 * there is work to do. Pass `undefined` to detach and stop the current scheduler.
+	 *
+	 * If no scheduler is attached, the manager never cycles on its own and {@link MetadataManager.cycle}
+	 * has to be called manually. That is what the tests do.
+	 *
+	 * @param scheduler
+	 */
+	public setCycleScheduler(scheduler: CycleScheduler | undefined): void {
+		if (this.cycleScheduler !== undefined && this.cycleScheduler !== scheduler) {
+			this.cycleScheduler.stop();
+		}
+
+		this.cycleScheduler = scheduler;
+
+		this.updateCycleScheduler();
+	}
+
+	public getCycleScheduler(): CycleScheduler | undefined {
+		return this.cycleScheduler;
+	}
+
+	/**
+	 * Whether any cache item in any source still needs the cycle to run.
+	 *
+	 * A cache item needs the cycle if:
+	 *
+	 *  - it has listeners, since a listener can write at any moment,
+	 *  - it is dirty, since the write-back to the external source has not happened yet,
+	 *  - its external write lock has not counted down to zero yet, or
+	 *  - the source would let it be deleted, since it still has to age into the cache GC.
+	 *
+	 * When none of that holds for any cache item, cycling is pure overhead and the timer is stopped.
+	 * The permanently present global memory cache item is not deletable, so on its own it never keeps
+	 * the timer alive.
+	 *
+	 * Note for source authors: {@link IMetadataSource.onCycle} is only called while this returns
+	 * true. It is a no-op in every source today. A source that wants real per-tick work there has to
+	 * make that work visible to this check, otherwise it will not run once the vault goes idle.
+	 */
+	public hasCycleWork(): boolean {
+		for (const source of this.sources.values()) {
+			for (const cacheItem of source.getCacheItems()) {
+				if (
+					cacheItem.subscriptions.length > 0 ||
+					cacheItem.dirty ||
+					cacheItem.externalWriteLock > 0 ||
+					source.shouldDelete(cacheItem)
+				) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Starts or stops the cycle scheduler to match the current amount of outstanding work.
+	 */
+	private updateCycleScheduler(): void {
+		if (this.cycleScheduler === undefined) {
+			return;
+		}
+
+		if (this.hasCycleWork()) {
+			this.cycleScheduler.start();
+		} else {
+			this.cycleScheduler.stop();
+		}
+	}
+
+	/**
+	 * Stops and detaches the cycle scheduler. Call this when the plugin unloads.
+	 */
+	public destroy(): void {
+		this.cycleScheduler?.stop();
+		this.cycleScheduler = undefined;
 	}
 
 	public setDefaultSource(id: string): void {
@@ -252,6 +338,9 @@ export class MetadataManager {
 
 		const initialValue = source.readCacheItem(cacheItem, subscription.bindTarget.storageProp);
 		subscription.onUpdate(initialValue);
+
+		// there is now at least one listener, so the cycle has work to do
+		this.updateCycleScheduler();
 	}
 
 	/**
@@ -362,6 +451,12 @@ export class MetadataManager {
 				console.warn(`meta-bind | MetadataManager >> failed to cycle source`, result.reason);
 			}
 		}
+
+		// The cycle just drained whatever work it could. If nothing is left, stop the timer.
+		// Doing this here rather than on the last unsubscribe is what makes the gate safe: a pending
+		// write-back, a running external write lock and a cache item still waiting for the cache GC
+		// all keep the timer alive until they are actually done.
+		this.updateCycleScheduler();
 	}
 
 	private async cycleSource(source: MetadataSource): Promise<void> {
@@ -441,6 +536,9 @@ export class MetadataManager {
 		cacheItem.dirty = true;
 		cacheItem.externalWriteLock = METADATA_CACHE_EXTERNAL_WRITE_LOCK_DURATION;
 		this.notifyListeners(bindTarget, updateSourceUuid);
+
+		// the cache item is now dirty and write locked, both of which the cycle has to work off
+		this.updateCycleScheduler();
 	}
 
 	/**

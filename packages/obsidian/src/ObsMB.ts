@@ -2,6 +2,7 @@ import { MetaBind, MetaBindBuild } from 'meta-bind-core/src';
 import { DomHelpers } from 'meta-bind-core/src/api/DomHelpers';
 import { RenderChildType } from 'meta-bind-core/src/config/APIConfigs';
 import { EMBED_MAX_DEPTH } from 'meta-bind-core/src/config/FieldConfigs';
+import { IntervalCycleScheduler } from 'meta-bind-core/src/metadata/CycleScheduler';
 import {
 	GlobalMetadataSource,
 	InternalMetadataSource,
@@ -143,9 +144,15 @@ export class ObsMetaBind extends MetaBind<ObsComponents> {
 			}),
 		);
 
-		this.plugin.registerInterval(
-			window.setInterval(() => void this.metadataManager.cycle(), this.getSettings().syncInterval),
+		// The cycle timer is gated on outstanding metadata work, so it does not tick at all while
+		// nothing is bound. `registerInterval` is not usable here because the interval is created
+		// and cleared repeatedly over a session; the scheduler is torn down on unload instead.
+		const cycleScheduler = new IntervalCycleScheduler(
+			() => void this.metadataManager.cycle(),
+			this.getSettings().syncInterval,
 		);
+		this.plugin.register(() => cycleScheduler.stop());
+		this.metadataManager.setCycleScheduler(cycleScheduler);
 	}
 
 	private addPostProcessors(): void {
